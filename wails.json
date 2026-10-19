@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "CodeQLAuditPro",
+  "outputfilename": "CodeQLAuditPro",
+  "frontend:install": "pnpm install",
+  "frontend:build": "pnpm build",
+  "frontend:dev:watcher": "pnpm exec vite --port 34115",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "shiyan",
+    "email": ""
+  },
+  "info": {
+    "companyName": "CodeQLAuditPro",
+    "productName": "CodeQLAuditPro",
+    "productVersion": "1.1.0",
+    "copyright": "GPL-3.0",
+    "comments": "CodeQL 数据库构建、查询分析与结果审计的一体化工作台"
+  }
+}

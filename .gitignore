@@ -1,0 +1,22 @@
+.DS_Store
+*.log
+
+# 构建产物
+build/bin/
+build/*.app/
+
+# 前端依赖与生成物
+frontend/node_modules/
+frontend/dist/*
+!frontend/dist/.gitkeep
+frontend/wailsjs/
+
+# 本地 Go 缓存（仓库内便携构建时使用）
+.gopath/
+.gocache/
+.gomodcache*/
+.bin/
+/codeql-audit
+
+# Wails 安装缓存标记
+frontend/package.json.md5
