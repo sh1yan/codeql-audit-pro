@@ -131,6 +131,7 @@ export interface StatsDTO {
   missing: number;
   unread: number;
   pending: number;
+  translationMissing: number;
   verified: number;
   falsePositive: number;
   truePositive: number;
@@ -205,6 +206,7 @@ export interface SettingsDTO {
   showColumnRuler: boolean;
   codeSearchShortcut: string;
   translateDb: string;
+  historyDb: string;
   dataDir: string;
   configPath: string;
   windowWidth: number;
@@ -226,6 +228,33 @@ export interface BootstrapDTO {
   dataDir: string;
   configPath: string;
   warning?: string;
+}
+
+export interface ProjectHistoryDTO {
+  csvPath: string;
+  csvName: string;
+  srcRoot: string;
+  lastOpened: string;
+  totalFindings: number;
+  resolvedFindings: number;
+  reviewedCount: number;
+  verdictCount: number;
+  format: string;
+  formatLabel: string;
+  toolName: string;
+  resultExists: boolean;
+  resultSize: number;
+  sourceExists: boolean;
+  active: boolean;
+}
+
+export interface TranslateProjectDTO {
+  project: ProjectDTO | null;
+  total: number;
+  translated: number;
+  remaining: number;
+  message: string;
+  lastError?: string;
 }
 
 export interface FileDTO {
@@ -408,6 +437,11 @@ export interface AppApi {
   ChooseDirectory(title: string): Promise<string>;
   LoadProject(csvPath: string, srcRoot: string): Promise<ProjectDTO>;
   GetProject(): Promise<ProjectDTO | null>;
+  CloseProject(): Promise<void>;
+  GetProjectHistory(): Promise<ProjectHistoryDTO[]>;
+  DeleteProjectHistory(csvPath: string): Promise<ProjectHistoryDTO[]>;
+  ClearProjectHistory(): Promise<ProjectHistoryDTO[]>;
+  TranslateProject(): Promise<TranslateProjectDTO>;
   SetSrcRoot(root: string): Promise<ProjectDTO>;
   GetSourceFile(csvPath: string, resolvedPath: string): Promise<FileDTO>;
   ResolvePath(csvPath: string): Promise<string>;

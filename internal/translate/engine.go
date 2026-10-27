@@ -39,6 +39,9 @@ type Engine struct {
 	mu    sync.Mutex
 	mem   map[string]memEntry
 	stats Stats
+	// lastErr 记录最近一次大模型翻译失败的原因，界面「补全翻译」失败时
+	// 可以直接告诉用户是超时、401 还是模型名不对。
+	lastErr string
 }
 
 // NewEngine 创建引擎，并用内置词典播种翻译库。
@@ -77,6 +80,29 @@ func (e *Engine) ResetStats() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.stats = Stats{}
+}
+
+// ClearLastError 清空最近一次大模型错误。
+func (e *Engine) ClearLastError() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.lastErr = ""
+}
+
+// LastError 返回最近一次大模型翻译失败的原因（空串表示没有失败）。
+func (e *Engine) LastError() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.lastErr
+}
+
+func (e *Engine) noteError(err error) {
+	if err == nil {
+		return
+	}
+	e.mu.Lock()
+	e.lastErr = err.Error()
+	e.mu.Unlock()
 }
 
 func memKey(kind, en string) string { return kind + "\x00" + en }
@@ -234,14 +260,19 @@ func (e *Engine) callLLM(ctx context.Context, kind, text string) (string, error)
 	client := e.llm
 	e.mu.Unlock()
 	if client == nil || !client.Configured() {
-		return "", fmt.Errorf("未配置大模型")
+		err := fmt.Errorf("未配置大模型")
+		e.noteError(err)
+		return "", err
 	}
 	zh, err := client.Translate(ctx, kind, text)
 	if err != nil {
+		e.noteError(err)
 		return "", err
 	}
 	if strings.TrimSpace(zh) == "" {
-		return "", fmt.Errorf("大模型返回空译文")
+		err := fmt.Errorf("大模型返回空译文")
+		e.noteError(err)
+		return "", err
 	}
 	if e.store != nil {
 		_ = e.store.Save(kind, text, zh, OriginLLM)

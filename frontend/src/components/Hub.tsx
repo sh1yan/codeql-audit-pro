@@ -50,25 +50,27 @@ export function Hub({
 
   return (
     <div className="hub-screen">
-      <div className="start-grid" />
-      <div
-        className="start-orb"
-        style={{
-          background: "radial-gradient(circle, #6366f1, transparent 66%)",
-          left: "4%",
-          top: "-24%",
-          opacity: 0.42,
-        }}
-      />
-      <div
-        className="start-orb"
-        style={{
-          background: "radial-gradient(circle, #22d3ee, transparent 66%)",
-          right: "2%",
-          bottom: "-30%",
-          opacity: 0.25,
-        }}
-      />
+      <div className="start-decor" aria-hidden="true">
+        <div className="start-grid" />
+        <div
+          className="start-orb"
+          style={{
+            background: "radial-gradient(circle, #6366f1, transparent 66%)",
+            left: "4%",
+            top: "-24%",
+            opacity: 0.42,
+          }}
+        />
+        <div
+          className="start-orb"
+          style={{
+            background: "radial-gradient(circle, #22d3ee, transparent 66%)",
+            right: "2%",
+            bottom: "-30%",
+            opacity: 0.25,
+          }}
+        />
+      </div>
 
       <header className={cn("hub-topbar", isWails() && platform === "darwin" && "hub-topbar--mac")}>
         <div className="brand">

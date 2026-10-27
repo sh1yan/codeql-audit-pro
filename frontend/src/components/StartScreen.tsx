@@ -4,36 +4,46 @@ import {
   FolderOpen,
   FolderTree,
   GitBranch,
+  History,
   Languages,
   ScanSearch,
   ShieldCheck,
   Sparkles,
   Target,
+  Trash2,
 } from "lucide-react";
-import type { BootstrapDTO } from "../types";
-import { shortPath } from "../lib/format";
+import type { BootstrapDTO, ProjectHistoryDTO } from "../types";
+import { cn, fmtDateTime, shortPath } from "../lib/format";
 
 export function StartScreen({
   boot,
+  history,
   onOpenCSV,
   onOpenSrc,
-  onLoadLast,
+  onOpenProject,
+  onDeleteProject,
+  onOpenHistory,
   loading,
 }: {
   boot: BootstrapDTO | null;
+  history: ProjectHistoryDTO[];
   onOpenCSV: () => void;
   onOpenSrc: () => void;
-  onLoadLast: () => void;
+  onOpenProject: (item: ProjectHistoryDTO) => void;
+  onDeleteProject: (item: ProjectHistoryDTO) => void;
+  onOpenHistory: () => void;
   loading: boolean;
 }) {
-  const recent = boot?.lastProject || "";
   return (
     <div className="start-screen">
-      <div className="start-grid" />
-      <div className="start-orb" style={{ background: "radial-gradient(circle, #6366f1, transparent 65%)", left: "12%", top: "-15%" }} />
-      <div className="start-orb" style={{ background: "radial-gradient(circle, #22d3ee, transparent 65%)", right: "8%", bottom: "-22%", opacity: 0.28 }} />
+      {/* 背景装饰单独裁剪，避免外溢的网格 / 光晕给启动页制造出可以滚动的空白。 */}
+      <div className="start-decor" aria-hidden="true">
+        <div className="start-grid" />
+        <div className="start-orb" style={{ background: "radial-gradient(circle, #6366f1, transparent 65%)", left: "12%", top: "-15%" }} />
+        <div className="start-orb" style={{ background: "radial-gradient(circle, #22d3ee, transparent 65%)", right: "8%", bottom: "-22%", opacity: 0.28 }} />
+      </div>
 
-      <div className="start-card">
+      <div className="start-card start-card--wide">
         <div className="start-logo">
           <ShieldCheck size={32} strokeWidth={1.9} />
         </div>
@@ -59,23 +69,101 @@ export function StartScreen({
           </button>
         </div>
 
-        {recent && (
-          <div className="start-recent">
-            <div className="w-8 h-8 rounded-lg bg-accent-soft border border-accent flex items-center justify-center flex-none">
-              <FileSpreadsheet size={15} className="text-accent" />
+        <section className="start-history">
+          <div className="start-history-head">
+            <div className="start-history-title">
+              <History size={13} className="text-accent" />
+              历史审计项目
+              <span className="text-[10px] font-normal text-tertiary">
+                记录已读标记、AI 判定与路径映射，可随时删除
+              </span>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[10px] text-tertiary mb-0.5">最近打开</div>
-              <div className="text-[11.5px] text-primary font-mono truncate" title={recent}>
-                {shortPath(recent, 72)}
-              </div>
-            </div>
-            <button className="btn btn-soft btn-sm" onClick={onLoadLast} disabled={loading}>
-              继续审计
-              <ArrowRight size={12} />
-            </button>
+            {history.length > 0 && (
+              <button className="btn btn-sm text-tertiary" onClick={onOpenHistory}>
+                管理 / 删除
+              </button>
+            )}
           </div>
-        )}
+
+          {history.length === 0 ? (
+            <div className="start-history-empty">
+              还没有历史项目。打开 CodeQL 结果文件并载入后，会自动记录在这里。
+            </div>
+          ) : (
+            <div className="start-history-list">
+              {history.slice(0, 6).map((item) => (
+                <div key={item.csvPath} className={cn("start-history-row", item.active && "active")}>
+                  <div className="start-history-icon">
+                    <FileSpreadsheet size={14} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="start-history-name">
+                      <span className="font-mono truncate" title={item.csvPath}>
+                        {item.csvName || shortPath(item.csvPath, 56)}
+                      </span>
+                      {item.active && (
+                        <span className="badge bg-accent-soft text-accent border-accent">当前</span>
+                      )}
+                      {!item.resultExists && (
+                        <span className="badge bg-sev-error-soft text-sev-error border-sev-error/25">
+                          结果文件缺失
+                        </span>
+                      )}
+                      {item.formatLabel && <span className="badge tag-chip font-mono">{item.formatLabel}</span>}
+                    </div>
+                    <div className="start-history-meta" title={`${item.csvPath}\n${item.srcRoot}`}>
+                      <span className="truncate">{shortPath(item.csvPath, 58)}</span>
+                      <span className="sep">·</span>
+                      <span>{item.totalFindings > 0 ? `${item.totalFindings} 条` : "条数未统计"}</span>
+                      <span className="sep">·</span>
+                      <span>已读 {item.reviewedCount}</span>
+                      <span className="sep">·</span>
+                      <span>AI 判定 {item.verdictCount}</span>
+                      {item.lastOpened && (
+                        <>
+                          <span className="sep">·</span>
+                          <span>{fmtDateTime(item.lastOpened)}</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="start-history-meta" title={item.srcRoot}>
+                      <FolderTree size={10} />
+                      <span className="truncate">
+                        {item.srcRoot ? shortPath(item.srcRoot, 62) : "未设置源码目录"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="start-history-actions">
+                    <button
+                      className="btn btn-soft btn-sm"
+                      disabled={!item.resultExists || loading}
+                      title={item.resultExists ? "载入这个历史项目" : "结果文件已不存在"}
+                      onClick={() => onOpenProject(item)}
+                    >
+                      继续审计
+                      <ArrowRight size={11} />
+                    </button>
+                    <button
+                      className="btn btn-icon btn-sm"
+                      title="删除这条历史记录"
+                      onClick={() => onDeleteProject(item)}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {history.length > 6 && (
+            <div className="start-history-more">
+              <button className="btn btn-sm" onClick={onOpenHistory}>
+                查看全部 {history.length} 个历史项目
+              </button>
+            </div>
+          )}
+        </section>
 
         <div className="start-features">
           <span className="chip">
@@ -98,8 +186,8 @@ export function StartScreen({
           </span>
         </div>
 
-        <div className="mt-6 text-[10px] text-tertiary">
-          支持 macOS · Windows · Linux　/　快捷键 {boot?.defaultSearchShortcut ?? "Cmd+F"} 在当前文件中查找
+        <div className="mt-5 text-[10px] text-tertiary">
+          历史项目保存在本地 SQLite（history.db）　/　快捷键 {boot?.defaultSearchShortcut ?? "Cmd+F"} 在当前文件中查找
         </div>
       </div>
     </div>

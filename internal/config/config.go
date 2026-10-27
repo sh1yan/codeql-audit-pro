@@ -1,8 +1,12 @@
 // Package config 负责应用配置与项目状态的持久化。
 //
 // 所有操作系统的默认数据目录统一为 ~/.CodeQLAuditPro/：
-//   - config.json      审计配置与项目状态
+//   - config.json      审计设置与界面偏好
+//   - history.db       历史审计项目（已读标记、AI 判定、路径映射）
 //   - translations.db  离线翻译库
+//
+// 旧版本把历史项目写在 config.json 的 projects 数组里，首次启动会自动
+// 迁移到 history.db，并从 config.json 中移除，避免配置文件越用越大。
 //
 // 设置环境变量 CODEQLAUDITPRO_HOME 可以改为绿色/便携模式。
 // 旧版目录（macOS 的 Application Support/codeql-audit、CODEQL_AUDIT_HOME 指向的
@@ -80,6 +84,11 @@ type ProjectState struct {
 	Reviewed map[string]bool `json:"reviewed,omitempty"`
 	// Verdicts 记录 AI 误报判定结果（键为 Finding.Key()）。
 	Verdicts map[string]VerdictRecord `json:"verdicts,omitempty"`
+	// 下面几项只用于「历史项目」列表展示，不参与业务判断。
+	TotalFindings    int    `json:"total_findings,omitempty"`
+	ResolvedFindings int    `json:"resolved_findings,omitempty"`
+	Format           string `json:"format,omitempty"`
+	ToolName         string `json:"tool_name,omitempty"`
 }
 
 // IsReviewed 判断一条漏洞是否已被查看过。
@@ -110,7 +119,13 @@ func (p *ProjectState) ReviewedCount() int {
 	if p == nil {
 		return 0
 	}
-	return len(p.Reviewed)
+	n := 0
+	for _, read := range p.Reviewed {
+		if read {
+			n++
+		}
+	}
+	return n
 }
 
 // ClearReviewed 清空全部已读标记。
@@ -157,9 +172,10 @@ func (p *ProjectState) ClearVerdicts() {
 
 // Config 是应用总配置。
 type Config struct {
-	LLM         LLMSettings    `json:"llm"`
-	TranslateDB string         `json:"translate_db"`
-	Projects    []ProjectState `json:"projects"`
+	LLM         LLMSettings `json:"llm"`
+	TranslateDB string      `json:"translate_db"`
+	// Projects 在内存里保存全部历史项目，落盘到 history.db，不再写进 config.json。
+	Projects    []ProjectState `json:"-"`
 	LastProject string         `json:"last_project"`
 	// 窗口尺寸
 	WindowWidth  float32 `json:"window_width"`
@@ -196,6 +212,41 @@ type Config struct {
 	CodeSearchShortcut string `json:"code_search_shortcut,omitempty"`
 
 	path string
+	// history 是 history.db；为 nil 时（例如命令行迁移工具）回退到把
+	// 项目状态写进 config.json，保证极端情况下数据也不会丢。
+	history *historyStore
+	// legacyProjects 是旧版 config.json 里的 projects 数组，仅在迁移时读取。
+	legacyProjects []ProjectState
+}
+
+// UnmarshalJSON 兼容旧版 config.json：旧文件里的 projects 数组只作为
+// 迁移来源读入内存，后续统一落到 history.db。
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type plain Config
+	aux := struct {
+		*plain
+		Projects []ProjectState `json:"projects"`
+	}{plain: (*plain)(c)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	c.legacyProjects = aux.Projects
+	c.Projects = aux.Projects
+	return nil
+}
+
+// MarshalJSON 在 history.db 可用时不再输出 projects 数组；只有历史库
+// 打不开（例如目录只读）时才退回旧格式，避免历史项目直接丢失。
+func (c Config) MarshalJSON() ([]byte, error) {
+	type plain Config
+	aux := struct {
+		*plain
+		Projects []ProjectState `json:"projects,omitempty"`
+	}{plain: (*plain)(&c)}
+	if c.history == nil && len(c.Projects) > 0 {
+		aux.Projects = c.Projects
+	}
+	return json.Marshal(aux)
 }
 
 // ColumnRuler 返回是否在代码视图顶部显示列标尺（默认显示）。
@@ -351,7 +402,9 @@ func legacyConfigDirs() []string {
 // migrateLegacyConfig 在首次使用新目录时把旧配置和翻译库复制过来。
 // 只做一次，且不会覆盖新目录里已经存在的数据。
 func migrateLegacyConfig(newDir string) {
-	if fileExists(filepath.Join(newDir, "config.json")) || fileExists(filepath.Join(newDir, "translations.db")) {
+	if fileExists(filepath.Join(newDir, "config.json")) ||
+		fileExists(filepath.Join(newDir, "translations.db")) ||
+		fileExists(filepath.Join(newDir, "history.db")) {
 		return
 	}
 	oldDir := ""
@@ -435,7 +488,90 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return loadFrom(filepath.Join(dir, "config.json"), dir, isFallbackDir(dir))
+	cfg, err := loadFrom(filepath.Join(dir, "config.json"), dir, isFallbackDir(dir))
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.openHistory(filepath.Join(dir, "history.db")); err != nil {
+		cfg.Warning = appendWarning(cfg.Warning,
+			"历史项目库不可用，本次只读取旧配置："+err.Error())
+		return cfg, nil
+	}
+	// last_project 指向已经被删除的历史项目时顺手清理掉。
+	if cfg.LastProject != "" && cfg.FindProject(cfg.LastProject) == nil {
+		cfg.LastProject = ""
+	}
+	// 发生过迁移：先备份旧 config.json，再重写并移除 projects 数组。
+	if len(cfg.legacyProjects) > 0 {
+		if err := copyFileIfMissing(cfg.Path(), cfg.Path()+".bak"); err != nil {
+			cfg.Warning = appendWarning(cfg.Warning, "备份旧配置失败："+err.Error())
+		}
+		if err := cfg.Save(); err != nil {
+			cfg.Warning = appendWarning(cfg.Warning, "迁移历史项目失败："+err.Error())
+		}
+	}
+	return cfg, nil
+}
+
+func appendWarning(old, extra string) string {
+	old = strings.TrimSpace(old)
+	extra = strings.TrimSpace(extra)
+	switch {
+	case old == "":
+		return extra
+	case extra == "":
+		return old
+	default:
+		return old + "；" + extra
+	}
+}
+
+// openHistory 打开历史项目库，并在首次升级时把旧 config.json 的 projects 导进去。
+func (c *Config) openHistory(path string) error {
+	store, err := openHistoryStore(path)
+	if err != nil {
+		return err
+	}
+	loaded, err := store.loadAll()
+	if err != nil {
+		_ = store.Close()
+		return err
+	}
+	if len(loaded) == 0 && len(c.legacyProjects) > 0 {
+		// 首次迁移：旧数据是唯一来源，写入后即可从 JSON 里移除。
+		loaded = append([]ProjectState(nil), c.legacyProjects...)
+		if err := store.saveAll(loaded); err != nil {
+			_ = store.Close()
+			return err
+		}
+	}
+	c.history = store
+	c.Projects = loaded
+	return nil
+}
+
+// HistoryPath 返回历史项目库路径（始终在数据目录下）。
+func (c *Config) HistoryPath() string {
+	if c == nil {
+		return ""
+	}
+	if c.history != nil && strings.TrimSpace(c.history.path) != "" {
+		return c.history.path
+	}
+	if dir := c.DataDir(); dir != "" {
+		return filepath.Join(dir, "history.db")
+	}
+	return "history.db"
+}
+
+// Close 关闭历史项目库。进程退出前调用。
+func (c *Config) Close() error {
+	if c == nil || c.history == nil {
+		return nil
+	}
+	err := c.history.Close()
+	c.history = nil
+	return err
 }
 
 // LoadFrom 从指定路径读取配置（测试、便携模式与多套配置场景使用）。
@@ -491,7 +627,7 @@ func loadFrom(path, dir string, usingFallback bool) (*Config, error) {
 	return cfg, nil
 }
 
-// Save 写回配置文件。
+// Save 写回配置：设置写 config.json，历史项目写 history.db。
 func (c *Config) Save() error {
 	if c.path == "" {
 		dir, err := Home()
@@ -499,6 +635,15 @@ func (c *Config) Save() error {
 			return err
 		}
 		c.path = filepath.Join(dir, "config.json")
+	}
+	var historyErr error
+	if c.history != nil {
+		if err := c.history.saveAll(c.Projects); err != nil {
+			historyErr = err
+		} else {
+			// 已经成功落进 SQLite，不需要再在 JSON 里兜底。
+			c.legacyProjects = nil
+		}
 	}
 	raw, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -508,19 +653,34 @@ func (c *Config) Save() error {
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.path)
+	if err := os.Rename(tmp, c.path); err != nil {
+		return err
+	}
+	return historyErr
+}
+
+// FindProject 查找某个审计项目的状态（不创建）。
+func (c *Config) FindProject(csvPath string) *ProjectState {
+	key := strings.TrimSpace(csvPath)
+	if key == "" {
+		return nil
+	}
+	for i := range c.Projects {
+		if strings.EqualFold(strings.TrimSpace(c.Projects[i].CSVPath), key) {
+			return &c.Projects[i]
+		}
+	}
+	return nil
 }
 
 // ProjectFor 查找或创建某个审计项目的状态。
 func (c *Config) ProjectFor(csvPath, srcRoot string) *ProjectState {
 	key := strings.TrimSpace(csvPath)
-	for i := range c.Projects {
-		if strings.EqualFold(c.Projects[i].CSVPath, key) {
-			if srcRoot != "" {
-				c.Projects[i].SrcRoot = srcRoot
-			}
-			return &c.Projects[i]
+	if st := c.FindProject(key); st != nil {
+		if srcRoot != "" {
+			st.SrcRoot = srcRoot
 		}
+		return st
 	}
 	c.Projects = append(c.Projects, ProjectState{
 		CSVPath:     key,
@@ -532,17 +692,50 @@ func (c *Config) ProjectFor(csvPath, srcRoot string) *ProjectState {
 	return &c.Projects[len(c.Projects)-1]
 }
 
+// DeleteProject 从历史项目库中删除一个项目，并同步清理 last_project。
+// 不会删除结果文件、源码目录或翻译库。
+func (c *Config) DeleteProject(csvPath string) error {
+	key := strings.TrimSpace(csvPath)
+	if key == "" {
+		return nil
+	}
+	next := make([]ProjectState, 0, len(c.Projects))
+	for _, st := range c.Projects {
+		if strings.EqualFold(strings.TrimSpace(st.CSVPath), key) {
+			continue
+		}
+		next = append(next, st)
+	}
+	c.Projects = next
+	if strings.EqualFold(strings.TrimSpace(c.LastProject), key) {
+		c.LastProject = ""
+	}
+	if c.history != nil {
+		if err := c.history.delete(key); err != nil {
+			return err
+		}
+	}
+	return c.Save()
+}
+
+// ClearProjects 清空全部历史项目。
+func (c *Config) ClearProjects() error {
+	c.Projects = nil
+	c.LastProject = ""
+	if c.history != nil {
+		if err := c.history.saveAll(nil); err != nil {
+			return err
+		}
+	}
+	return c.Save()
+}
+
 // Last 返回最近一次打开的项目状态。
 func (c *Config) Last() *ProjectState {
 	if c.LastProject == "" {
 		return nil
 	}
-	for i := range c.Projects {
-		if strings.EqualFold(c.Projects[i].CSVPath, c.LastProject) {
-			return &c.Projects[i]
-		}
-	}
-	return nil
+	return c.FindProject(c.LastProject)
 }
 
 // DataDir 返回配置文件所在目录。

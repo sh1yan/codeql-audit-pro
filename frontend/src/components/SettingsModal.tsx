@@ -439,6 +439,10 @@ export function SettingsModal({
                         <td className="strong">翻译库</td>
                         <td className="font-mono break-all">{draft.translateDb}</td>
                       </tr>
+                      <tr>
+                        <td className="strong">历史项目库</td>
+                        <td className="font-mono break-all">{draft.historyDb}</td>
+                      </tr>
                     </tbody>
                   </table>
                   <div className="flex gap-2 mt-3">

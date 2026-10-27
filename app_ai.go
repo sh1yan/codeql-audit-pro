@@ -402,6 +402,81 @@ func (a *App) TestConnection(settings LLMSettingsDTO) (*TestConnectionDTO, error
 	return &TestConnectionDTO{Endpoint: cfg.Endpoint(), Model: cfg.Model, Reply: reply}, nil
 }
 
+// TranslateProject 立即补齐当前项目中所有缺失的中文翻译。
+//
+// 早期版本只有在重新打开项目时才会再次调用大模型；这里把同一个过程做成
+// 可重复触发的接口，返回更新后的完整项目载荷，前端拿到后立刻刷新列表与详情。
+func (a *App) TranslateProject() (*TranslateProjectDTO, error) {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+
+	a.mu.Lock()
+	p := a.proj
+	engine := a.engine
+	a.mu.Unlock()
+	if p == nil {
+		return nil, fmt.Errorf("项目尚未载入")
+	}
+	if engine == nil {
+		return nil, fmt.Errorf("翻译引擎未初始化")
+	}
+
+	missing := p.MissingTranslationCount()
+	if missing == 0 {
+		dto, err := a.projectDTO()
+		if err != nil {
+			return nil, err
+		}
+		return &TranslateProjectDTO{
+			Project:   dto,
+			Total:     0,
+			Remaining: 0,
+			Message:   "当前项目没有待翻译的内容。",
+		}, nil
+	}
+	if !engine.LLM().Configured() {
+		return nil, fmt.Errorf(
+			"大模型翻译不可用：请在「设置 → 模型与 AI」中开启「启用大模型翻译兜底」，并填写接口地址、模型与 API Key。")
+	}
+
+	engine.ClearLastError()
+	total, translated, remaining := p.TranslateMissing(func(done, total int, msg string) {
+		if a.ctx != nil {
+			wruntime.EventsEmit(a.ctx, "translate:progress", map[string]any{
+				"done":    done,
+				"total":   total,
+				"message": msg,
+			})
+		}
+	})
+
+	a.mu.Lock()
+	a.fileMu.Lock()
+	a.fileCache = map[string]*FileDTO{}
+	a.fileMu.Unlock()
+	lastErr := engine.LastError()
+	a.mu.Unlock()
+
+	dto, err := a.projectDTO()
+	if err != nil {
+		return nil, err
+	}
+	message := fmt.Sprintf("翻译完成：本次处理 %d 条，补全 %d 条，仍有 %d 条待翻译。", total, translated, remaining)
+	if total == 0 {
+		message = "当前项目没有待翻译的内容。"
+	} else if remaining == 0 {
+		message = fmt.Sprintf("翻译完成：本次补全 %d 条，当前项目已全部中文化。", translated)
+	}
+	return &TranslateProjectDTO{
+		Project:    dto,
+		Total:      total,
+		Translated: translated,
+		Remaining:  remaining,
+		Message:    message,
+		LastError:  lastErr,
+	}, nil
+}
+
 // ------------------------- 翻译库与纠错 -------------------------
 
 // GetLibrary 查询翻译库，kind 为空表示全部。

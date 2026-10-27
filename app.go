@@ -23,7 +23,7 @@ import (
 )
 
 // appVersion 是界面与关于页展示的版本号。
-const appVersion = "1.1.0"
+const appVersion = "1.2.0"
 
 // App 是 Wails 后端服务。所有暴露给前端的公开方法都必须有明确的 JSON 友好
 // 返回值；耗时操作（项目载入、AI 验证）通过事件向前端汇报进度。
@@ -162,6 +162,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.store != nil {
 		_ = a.store.Close()
 	}
+	_ = a.cfg.Close()
 }
 
 // ------------------------- 生命周期与设置 -------------------------
@@ -175,16 +176,19 @@ func (a *App) Bootstrap() (*BootstrapDTO, error) {
 	defer a.mu.Unlock()
 	settings := a.settingsDTO()
 	last := strings.TrimSpace(a.cfg.LastProject)
-	lastSrc := ""
-	autoLoad := false
-	if last != "" {
-		if st, err := os.Stat(last); err == nil && !st.IsDir() {
-			autoLoad = true
-			if ps := a.cfg.Last(); ps != nil {
-				lastSrc = ps.SrcRoot
-			}
-		}
+	if last == "" {
+		last = strings.TrimSpace(a.initialCSV)
 	}
+	lastSrc := ""
+	if ps := a.cfg.Last(); ps != nil {
+		lastSrc = ps.SrcRoot
+	} else {
+		lastSrc = strings.TrimSpace(a.initialSrc)
+	}
+	// 只有「命令行显式指定了 -csv」才在启动时自动载入。
+	// 普通双击启动始终保持审计工作台的选择界面，历史项目由用户自己点开；
+	// 否则一个 15MB 的 SARIF + 上千条翻译会把窗口卡在启动画面。
+	autoLoad := strings.TrimSpace(a.initialCSV) != ""
 	version := appVersion
 	return &BootstrapDTO{
 		Settings:              settings,
@@ -406,6 +410,10 @@ func (a *App) LoadProject(csvPath, srcRoot string) (*ProjectDTO, error) {
 	st = a.cfg.ProjectFor(csvPath, root)
 	st.LastOpened = time.Now().Format(time.RFC3339)
 	st.SrcRoot = root
+	st.TotalFindings = p.Stats.Total
+	st.ResolvedFindings = p.Stats.Resolved
+	st.Format = string(p.Format)
+	st.ToolName = p.ToolName
 	for k, v := range st.Reviewed {
 		if v {
 			a.reviewed[k] = true
@@ -462,7 +470,11 @@ func (a *App) SetSrcRoot(root string) (*ProjectDTO, error) {
 	a.proj.SetSrcRoot(root)
 
 	a.mu.Lock()
-	a.cfg.ProjectFor(a.proj.CSVPath, root).SrcRoot = root
+	st = a.cfg.ProjectFor(a.proj.CSVPath, root)
+	st.SrcRoot = root
+	st.ResolvedFindings = a.proj.Stats.Resolved
+	st.TotalFindings = a.proj.Stats.Total
+	st.LastOpened = time.Now().Format(time.RFC3339)
 	_ = a.cfg.Save()
 	a.fileMu.Lock()
 	a.fileCache = map[string]*FileDTO{}

@@ -147,6 +147,35 @@ type FindingDTO struct {
 	RelatedLocations   []RelatedLocationDTO `json:"relatedLocations"`
 }
 
+// ProjectHistoryDTO 是「历史项目」界面的一条记录。
+type ProjectHistoryDTO struct {
+	CSVPath          string `json:"csvPath"`
+	CSVName          string `json:"csvName"`
+	SrcRoot          string `json:"srcRoot"`
+	LastOpened       string `json:"lastOpened"`
+	TotalFindings    int    `json:"totalFindings"`
+	ResolvedFindings int    `json:"resolvedFindings"`
+	ReviewedCount    int    `json:"reviewedCount"`
+	VerdictCount     int    `json:"verdictCount"`
+	Format           string `json:"format"`
+	FormatLabel      string `json:"formatLabel"`
+	ToolName         string `json:"toolName"`
+	ResultExists     bool   `json:"resultExists"`
+	ResultSize       int64  `json:"resultSize"`
+	SourceExists     bool   `json:"sourceExists"`
+	Active           bool   `json:"active"`
+}
+
+// TranslateProjectDTO 是「补全翻译」的返回。
+type TranslateProjectDTO struct {
+	Project    *ProjectDTO `json:"project"`
+	Total      int         `json:"total"`
+	Translated int         `json:"translated"`
+	Remaining  int         `json:"remaining"`
+	Message    string      `json:"message"`
+	LastError  string      `json:"lastError,omitempty"`
+}
+
 // StatsDTO 是底栏与项目卡片的统计快照。
 type StatsDTO struct {
 	Total               int            `json:"total"`
@@ -156,6 +185,7 @@ type StatsDTO struct {
 	Missing             int            `json:"missing"`
 	Unread              int            `json:"unread"`
 	Pending             int            `json:"pending"`
+	TranslationMissing  int            `json:"translationMissing"`
 	Verified            int            `json:"verified"`
 	FalsePositive       int            `json:"falsePositive"`
 	TruePositive        int            `json:"truePositive"`
@@ -237,6 +267,7 @@ type SettingsDTO struct {
 	ShowColumnRuler    bool              `json:"showColumnRuler"`
 	CodeSearchShortcut string            `json:"codeSearchShortcut"`
 	TranslateDB        string            `json:"translateDb"`
+	HistoryDB          string            `json:"historyDb"`
 	DataDir            string            `json:"dataDir"`
 	ConfigPath         string            `json:"configPath"`
 	WindowWidth        int               `json:"windowWidth"`
@@ -590,6 +621,7 @@ func (a *App) statsLocked() StatsDTO {
 	s.Resolved = ps.Resolved
 	s.Missing = ps.Missing
 	s.Pending = ps.Pending
+	s.TranslationMissing = ps.NeedsTranslation
 	s.WithCodeFlow = ps.WithCodeFlow
 	s.CWEKinds = ps.CWEKinds
 	s.TotalSourceLocation = 0
@@ -731,6 +763,7 @@ func (a *App) settingsDTO() SettingsDTO {
 		ShowColumnRuler:    c.ColumnRuler(),
 		CodeSearchShortcut: c.SearchShortcut(),
 		TranslateDB:        c.TranslateDB,
+		HistoryDB:          c.HistoryPath(),
 		DataDir:            c.DataDir(),
 		ConfigPath:         c.Path(),
 		WindowWidth:        int(c.WindowWidth),

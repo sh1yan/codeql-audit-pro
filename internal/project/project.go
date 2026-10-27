@@ -28,19 +28,22 @@ type Options struct {
 
 // Stats 是项目统计信息。
 type Stats struct {
-	Total        int
-	RuleKinds    int
-	FileKinds    int
-	ByRule       map[string]int
-	ByFile       map[string]int
-	BySeverity   map[string]int
-	Resolved     int
-	Missing      int
-	Pending      int
-	FromLLM      int
-	WithCodeFlow int
-	CWEKinds     int
-	RuleNameZH   map[string]string
+	Total      int
+	RuleKinds  int
+	FileKinds  int
+	ByRule     map[string]int
+	ByFile     map[string]int
+	BySeverity map[string]int
+	Resolved   int
+	Missing    int
+	Pending    int
+	// NeedsTranslation 统计仍缺少任何中文内容（规则名 / 描述 / 详情）的漏洞数，
+	// 用于「补全翻译」按钮上的角标。
+	NeedsTranslation int
+	FromLLM          int
+	WithCodeFlow     int
+	CWEKinds         int
+	RuleNameZH       map[string]string
 }
 
 // Project 是一次审计会话。
@@ -330,6 +333,9 @@ func (p *Project) computeStats() {
 		if f.TranslatePending {
 			s.Pending++
 		}
+		if p.needsTranslation(f) {
+			s.NeedsTranslation++
+		}
 		if f.TranslateSource == translate.SourceLLM {
 			s.FromLLM++
 		}
@@ -388,8 +394,8 @@ func (p *Project) AddPrefixRule(from, to string) {
 	p.computeStats()
 }
 
-// Retranslate 在译文被修改后重新生成一条漏洞的中文内容。
-func (p *Project) Retranslate(f *model.Finding) {
+// retranslate 重新生成一条漏洞的中文内容（不重算全项目统计）。
+func (p *Project) retranslate(f *model.Finding) {
 	if f == nil || p.Engine == nil {
 		return
 	}
@@ -406,7 +412,93 @@ func (p *Project) Retranslate(f *model.Finding) {
 	p.Engine.Invalidate(translate.KindDescription, f.Description)
 	p.translateFinding(f)
 	p.resolveFinding(f)
+}
+
+// Retranslate 在译文被修改后重新生成一条漏洞的中文内容。
+func (p *Project) Retranslate(f *model.Finding) {
+	if f == nil || p.Engine == nil {
+		return
+	}
+	p.retranslate(f)
 	p.computeStats()
+}
+
+// needsTranslation 判断一条漏洞是否还有内容保持英文（或仍标记为待翻译）。
+func (p *Project) needsTranslation(f *model.Finding) bool {
+	if f == nil {
+		return false
+	}
+	ruleLabel := strings.TrimSpace(f.RuleName)
+	if f.RuleInfo != nil && strings.TrimSpace(f.RuleInfo.ShortDescription) != "" {
+		ruleLabel = strings.TrimSpace(f.RuleInfo.ShortDescription)
+	}
+	if ruleLabel != "" {
+		zh := strings.TrimSpace(f.RuleNameZH)
+		if zh == "" || strings.EqualFold(zh, ruleLabel) {
+			return true
+		}
+	}
+	if desc := strings.TrimSpace(f.Description); desc != "" {
+		zh := strings.TrimSpace(f.DescriptionZH)
+		if zh == "" || strings.EqualFold(zh, desc) {
+			return true
+		}
+	}
+	if f.TranslatePending {
+		return true
+	}
+	zh := strings.TrimSpace(f.MessageZHTemplate)
+	return zh == "" || zh == f.MessageKey
+}
+
+// MissingTranslationCount 返回仍缺中文内容的漏洞数量。
+func (p *Project) MissingTranslationCount() int {
+	if p == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range p.Findings {
+		if p.needsTranslation(f) {
+			n++
+		}
+	}
+	return n
+}
+
+// TranslateMissing 重新尝试所有仍缺中文的条目（规则名 / 描述 / 漏洞详情），
+// 会把大模型翻译结果写回翻译库。用于界面上的「补全翻译」按钮。
+//
+// 返回：本次处理的漏洞数、补全成功的数量、仍缺失的数量。
+func (p *Project) TranslateMissing(progress func(done, total int, msg string)) (total, translated, remaining int) {
+	if p == nil || p.Engine == nil {
+		return 0, 0, 0
+	}
+	targets := make([]*model.Finding, 0)
+	for _, f := range p.Findings {
+		if p.needsTranslation(f) {
+			targets = append(targets, f)
+		}
+	}
+	total = len(targets)
+	if total == 0 {
+		p.computeStats()
+		return 0, 0, 0
+	}
+	for i, f := range targets {
+		p.retranslate(f)
+		if progress != nil {
+			progress(i+1, total,
+				fmt.Sprintf("正在补全翻译 %d/%d …", i+1, total))
+		}
+	}
+	p.computeStats()
+	for _, f := range targets {
+		if p.needsTranslation(f) {
+			remaining++
+		}
+	}
+	translated = total - remaining
+	return total, translated, remaining
 }
 
 // Files 返回按出现次数排序的文件列表。

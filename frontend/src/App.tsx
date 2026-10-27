@@ -19,6 +19,7 @@ import type {
   LocationDTO,
   NavPoint,
   ProjectDTO,
+  ProjectHistoryDTO,
   SettingsDTO,
   StatsDTO,
   Theme,
@@ -33,16 +34,32 @@ import { StatusBar } from "./components/StatusBar";
 import { StartScreen } from "./components/StartScreen";
 import { Hub } from "./components/Hub";
 import { AssistantWorkspace } from "./components/AssistantWorkspace";
-import { ToastStack, type ToastItem, type ToastKind } from "./components/ui";
+import { Modal, ToastStack, type ToastItem, type ToastKind } from "./components/ui";
 import { SettingsModal } from "./components/SettingsModal";
 import { MappingModal } from "./components/MappingModal";
 import { LibraryModal } from "./components/LibraryModal";
 import { BatchModal } from "./components/BatchModal";
 import { CorrectionModal } from "./components/CorrectionModal";
+import { ProjectHistoryModal } from "./components/ProjectHistoryModal";
 import { messageText, cn } from "./lib/format";
 
-type ModalKind = "settings" | "mapping" | "library" | "batch" | "correction" | null;
+type ModalKind =
+  | "settings"
+  | "mapping"
+  | "library"
+  | "batch"
+  | "correction"
+  | "history"
+  | null;
 type Tone = "info" | "success" | "error";
+
+type ConfirmState = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void | Promise<void>;
+};
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
@@ -107,6 +124,10 @@ export default function App() {
   const [bootError, setBootError] = useState("");
   const [settings, setSettings] = useState<SettingsDTO | null>(null);
   const [project, setProject] = useState<ProjectDTO | null>(null);
+  const [projectHistory, setProjectHistory] = useState<ProjectHistoryDTO[]>([]);
+  const [translating, setTranslating] = useState(false);
+  const [translateProgress, setTranslateProgress] = useState({ done: 0, total: 0 });
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [active, setActive] = useState<ActiveLocation | null>(null);
   const [file, setFile] = useState<FileDTO | null>(null);
@@ -253,6 +274,14 @@ export default function App() {
     [applyStats, patchFinding],
   );
 
+  const refreshHistory = useCallback(async () => {
+    try {
+      setProjectHistory(await api.GetProjectHistory());
+    } catch {
+      // 历史库暂时不可用时不影响正常审计。
+    }
+  }, []);
+
   const loadProject = useCallback(
     async (csvPath: string, srcRoot: string, notifyUser = true) => {
       setLoading({ active: true, message: "正在解析、翻译并定位源码…", done: 0, total: 0 });
@@ -282,6 +311,7 @@ export default function App() {
         if (warnings.length > 0) {
           notify("info", `解析提示：\n${warnings.slice(0, 5).join("\n")}`);
         }
+        void refreshHistory();
       } catch (err) {
         setStatMessage("载入失败", "error", false);
         notify("error", String(err));
@@ -289,7 +319,7 @@ export default function App() {
         setLoading({ active: false, message: "", done: 0, total: 0 });
       }
     },
-    [notify, setStatMessage],
+    [notify, setStatMessage, refreshHistory],
   );
 
   // 运行器分析出结果后，可以直接带着结果和源码目录跳到审计工作台。
@@ -304,6 +334,131 @@ export default function App() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalAuditRequest]);
+
+  const resetWorkspace = useCallback(() => {
+    setProject(null);
+    setSelectedKey(null);
+    setActive(null);
+    setFile(null);
+    setFileError("");
+    setHistory([]);
+    setFilter(EMPTY_FILTER);
+    setSearchOpen(false);
+    reviewedRef.current.clear();
+    lastSelectedRef.current = null;
+  }, []);
+
+  const closeCurrentProject = () => {
+    if (!project) return;
+    setConfirm({
+      title: "退出当前项目",
+      message:
+        "退出后回到审计工作台的选择界面。\n\n已读标记、AI 判定与路径映射都会保留在「历史项目」里。",
+      confirmLabel: "退出项目",
+      onConfirm: async () => {
+        try {
+          await api.CloseProject();
+          resetWorkspace();
+          setStatMessage("已退出当前项目", "info", false);
+          notify("success", "已退出当前项目，可从历史项目继续审计。");
+          void refreshHistory();
+        } catch (err) {
+          notify("error", String(err));
+        }
+      },
+    });
+  };
+
+  const openHistoryProject = async (item: ProjectHistoryDTO) => {
+    if (!item.resultExists) {
+      notify("error", `结果文件不存在：\n${item.csvPath}\n\n可以删除这条历史记录，或把文件放回原位置。`);
+      return;
+    }
+    setTool("audit");
+    setModal(null);
+    await loadProject(item.csvPath, item.srcRoot);
+  };
+
+  const performDeleteHistory = async (item: ProjectHistoryDTO, active: boolean) => {
+    try {
+      const list = await api.DeleteProjectHistory(item.csvPath);
+      setProjectHistory(list);
+      if (active) resetWorkspace();
+      if (boot?.lastProject && boot.lastProject.toLowerCase() === item.csvPath.toLowerCase()) {
+        setBoot((b) => (b ? { ...b, lastProject: "", lastSrcRoot: "" } : b));
+      }
+      notify("success", `已删除历史项目：${item.csvName}`);
+      setStatMessage("已删除历史项目", "info", false);
+    } catch (err) {
+      notify("error", String(err));
+    }
+  };
+
+  const deleteHistoryProject = (item: ProjectHistoryDTO) => {
+    const active = !!(
+      project && project.csvPath.toLowerCase() === item.csvPath.toLowerCase()
+    );
+    setConfirm({
+      title: "删除历史项目",
+      message:
+        `删除「${item.csvName}」？\n\n` +
+        (active ? "当前项目会被关闭并回到选择界面。\n" : "") +
+        "只会删除已读标记、AI 判定与路径映射记录，不会删除结果文件、源码或翻译库。",
+      confirmLabel: "删除",
+      danger: true,
+      onConfirm: () => performDeleteHistory(item, active),
+    });
+  };
+
+  const performClearHistory = async () => {
+    try {
+      const list = await api.ClearProjectHistory();
+      setProjectHistory(list);
+      resetWorkspace();
+      setBoot((b) => (b ? { ...b, lastProject: "", lastSrcRoot: "" } : b));
+      notify("success", "已清空历史项目");
+      setStatMessage("已清空历史项目", "info", false);
+    } catch (err) {
+      notify("error", String(err));
+    }
+  };
+
+  const clearProjectHistory = () => {
+    if (projectHistory.length === 0) return;
+    setConfirm({
+      title: "清空历史项目",
+      message:
+        `清空全部 ${projectHistory.length} 个历史项目？\n\n` +
+        "只会删除已读标记、AI 判定与路径映射记录，不会删除结果文件、源码或翻译库。",
+      confirmLabel: "清空全部",
+      danger: true,
+      onConfirm: performClearHistory,
+    });
+  };
+
+  const translateProject = async () => {
+    if (!project || translating) return;
+    setTranslating(true);
+    setTranslateProgress({ done: 0, total: project.stats.translationMissing || 0 });
+    setStatMessage("正在补全翻译…", "info", true);
+    try {
+      const res = await api.TranslateProject();
+      if (res.project) setProject(res.project);
+      setTranslateProgress({ done: res.total, total: res.total });
+      const text =
+        res.remaining > 0 && res.lastError
+          ? `${res.message}\n最近一次错误：${res.lastError}`
+          : res.message;
+      notify(res.remaining > 0 ? "info" : "success", text);
+      setStatMessage(res.message, res.remaining > 0 ? "info" : "success", false);
+      void refreshHistory();
+    } catch (err) {
+      notify("error", String(err));
+      setStatMessage("补全翻译失败", "error", false);
+    } finally {
+      setTranslating(false);
+    }
+  };
 
   const refreshProject = useCallback(async () => {
     const p = await api.GetProject();
@@ -327,7 +482,7 @@ export default function App() {
     }
   }, [openLocation]);
 
-  // 启动：读取 bootstrap，自动载入最近项目。
+  // 启动：只读取 bootstrap 与历史项目元数据，不自动解析上一次的结果文件。
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -349,9 +504,15 @@ export default function App() {
         setRightRatio(right);
         setLeftRatio(left);
         if (b.warning) notify("info", b.warning);
+        // 历史项目列表只读取 history.db 的轻量元数据，不解析结果文件。
+        // 不阻塞首屏：先让选择界面出来，列表随后补上。
+        void refreshHistory();
+        // 只有命令行显式传入 -csv 时才自动载入；普通启动停留在选择界面，
+        // 由用户从历史项目里挑一个，避免每次启动都解析几百 MB 的结果文件。
         const skipAuto =
           import.meta.env.DEV && new URLSearchParams(window.location.search).get("empty") === "1";
         if (b.autoLoad && b.lastProject && !skipAuto) {
+          setTool("audit");
           await loadProject(b.lastProject, b.lastSrcRoot, false);
         }
       } catch (err) {
@@ -405,6 +566,18 @@ export default function App() {
           total: p.total,
         }));
         setStatMessage(p.message || "正在载入项目…", "info", true);
+      },
+    );
+    return off;
+  }, [setStatMessage]);
+
+  // 补全翻译进度。
+  useEffect(() => {
+    const off = onEvent<{ done: number; total: number; message: string }>(
+      "translate:progress",
+      (p) => {
+        setTranslateProgress({ done: p.done, total: p.total });
+        setStatMessage(p.message || `正在补全翻译 ${p.done}/${p.total}`, "info", true);
       },
     );
     return off;
@@ -597,6 +770,7 @@ export default function App() {
         false,
       );
       notify("success", "源码目录已更新，已重新定位全部漏洞。");
+      void refreshHistory();
     } catch (err) {
       notify("error", String(err));
       setStatMessage("更换源码目录失败", "error", false);
@@ -983,7 +1157,7 @@ export default function App() {
     <div className="app-shell pro-shell">
       <div className="tool-layer" style={{ display: tool === "hub" ? "flex" : "none" }}>
         <Hub
-          version={boot?.version || "1.1.0"}
+          version={boot?.version || "1.2.0"}
           platform={boot?.platform || "darwin"}
           theme={theme}
           lastProject={project?.csvPath || boot?.lastProject || ""}
@@ -1009,6 +1183,14 @@ export default function App() {
         onExportCSV={() => void exportCurrent("csv")}
         onExportReport={() => void exportCurrent("report")}
         onExportVerdicts={() => void exportCurrent("verdicts")}
+        onTranslate={() => void translateProject()}
+        translating={translating}
+        translationMissing={project?.stats.translationMissing || 0}
+        onHistory={() => {
+          void refreshHistory();
+          setModal("history");
+        }}
+        onExitProject={() => void closeCurrentProject()}
         onFind={() => {
           if (project) setSearchOpen(true);
         }}
@@ -1033,10 +1215,14 @@ export default function App() {
       {!project ? (
         <StartScreen
           boot={boot}
+          history={projectHistory}
           onOpenCSV={() => void openCSV()}
           onOpenSrc={() => void chooseSrcRoot()}
-          onLoadLast={() => {
-            if (boot?.lastProject) void loadProject(boot.lastProject, boot.lastSrcRoot);
+          onOpenProject={(item) => void openHistoryProject(item)}
+          onDeleteProject={(item) => void deleteHistoryProject(item)}
+          onOpenHistory={() => {
+            void refreshHistory();
+            setModal("history");
           }}
           loading={loading.active}
         />
@@ -1127,7 +1313,7 @@ export default function App() {
             />
           </div>
 
-          {loading.active && (
+          {translating && (
             <div className="loading-overlay">
               <div className="loading-card">
                 <div className="flex items-center gap-2">
@@ -1135,22 +1321,31 @@ export default function App() {
                     <Sparkles size={13} />
                   </div>
                   <div className="flex-1">
-                    <div className="text-[12.5px] font-semibold text-primary">正在载入项目</div>
+                    <div className="text-[12.5px] font-semibold text-primary">正在补全翻译</div>
                     <div className="text-[10px] text-tertiary whitespace-pre-wrap">
-                      {loading.message || "正在解析、翻译并定位源码…"}
+                      正在把翻译库中没有的规则名 / 描述 / 漏洞详情交给大模型，完成后立即刷新界面。
                     </div>
                   </div>
                   <Loader2 size={15} className="spin text-accent" />
                 </div>
                 <div className="progress-track">
                   <div
-                    className={cn("progress-fill", loading.total <= 0 && "progress-indeterminate")}
-                    style={loading.total > 0 ? { width: `${(loading.done / loading.total) * 100}%` } : undefined}
+                    className={cn(
+                      "progress-fill",
+                      translateProgress.total <= 0 && "progress-indeterminate",
+                    )}
+                    style={
+                      translateProgress.total > 0
+                        ? {
+                            width: `${(translateProgress.done / translateProgress.total) * 100}%`,
+                          }
+                        : undefined
+                    }
                   />
                 </div>
-                {loading.total > 0 && (
+                {translateProgress.total > 0 && (
                   <div className="text-[9.5px] text-tertiary text-right font-mono">
-                    {loading.done} / {loading.total}
+                    {translateProgress.done} / {translateProgress.total}
                   </div>
                 )}
               </div>
@@ -1159,18 +1354,82 @@ export default function App() {
         </div>
       )}
 
+      {loading.active && (
+        <div className="loading-overlay" style={{ zIndex: 60 }}>
+          <div className="loading-card">
+            <div className="flex items-center gap-2">
+              <div className="brand-mark" style={{ width: 26, height: 26 }}>
+                <Sparkles size={13} />
+              </div>
+              <div className="flex-1">
+                <div className="text-[12.5px] font-semibold text-primary">正在载入项目</div>
+                <div className="text-[10px] text-tertiary whitespace-pre-wrap">
+                  {loading.message || "正在解析、翻译并定位源码…"}
+                </div>
+              </div>
+              <Loader2 size={15} className="spin text-accent" />
+            </div>
+            <div className="progress-track">
+              <div
+                className={cn("progress-fill", loading.total <= 0 && "progress-indeterminate")}
+                style={
+                  loading.total > 0
+                    ? { width: `${(loading.done / loading.total) * 100}%` }
+                    : undefined
+                }
+              />
+            </div>
+            {loading.total > 0 && (
+              <div className="text-[9.5px] text-tertiary text-right font-mono">
+                {loading.done} / {loading.total}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <StatusBar
         project={project}
         message={status.message}
         tone={status.tone}
         busy={status.busy}
-        version={boot?.version || "1.1.0"}
+        version={boot?.version || "1.2.0"}
         platform={boot?.platform || "darwin"}
       />
 
       {tool === "audit" && (
         <ToastStack items={toasts} onClose={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
       )}
+
+      <Modal
+        open={!!confirm}
+        onClose={() => setConfirm(null)}
+        title={confirm?.title || "确认操作"}
+        subtitle="请确认后继续"
+        icon={AlertTriangle}
+        size="sm"
+        footer={
+          <>
+            <button className="btn btn-outline" onClick={() => setConfirm(null)}>
+              取消
+            </button>
+            <button
+              className={confirm?.danger ? "btn btn-danger" : "btn btn-primary"}
+              onClick={() => {
+                const action = confirm;
+                setConfirm(null);
+                if (action) void action.onConfirm();
+              }}
+            >
+              {confirm?.confirmLabel || "确定"}
+            </button>
+          </>
+        }
+      >
+        <div className="text-[12px] text-secondary leading-relaxed whitespace-pre-wrap">
+          {confirm?.message}
+        </div>
+      </Modal>
 
       {settings && (
         <>
@@ -1184,7 +1443,7 @@ export default function App() {
             }}
             currentFile={file}
             currentLine={focusLine}
-            version={boot?.version || "1.1.0"}
+            version={boot?.version || "1.2.0"}
             platform={boot?.platform || "darwin"}
             onSaved={onSettingsSaved}
             notify={notify}
@@ -1233,6 +1492,16 @@ export default function App() {
             }}
             notify={notify}
           />
+          <ProjectHistoryModal
+            open={modal === "history"}
+            onClose={() => setModal(null)}
+            projects={projectHistory}
+            activeCsvPath={project?.csvPath || ""}
+            onOpen={(item) => void openHistoryProject(item)}
+            onDelete={(item) => void deleteHistoryProject(item)}
+            onClear={() => void clearProjectHistory()}
+            onRefresh={() => void refreshHistory()}
+          />
         </>
       )}
       </div>
@@ -1240,7 +1509,7 @@ export default function App() {
       <div className="tool-layer" style={{ display: tool === "assistant" ? "flex" : "none" }}>
         <AssistantWorkspace
           active={tool === "assistant"}
-          version={boot?.version || "1.1.0"}
+          version={boot?.version || "1.2.0"}
           theme={theme}
           onToggleTheme={toggleTheme}
           onHome={() => setTool("hub")}

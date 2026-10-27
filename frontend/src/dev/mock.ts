@@ -23,11 +23,13 @@ import type {
   LocationDTO,
   MappingDTO,
   ProjectDTO,
+  ProjectHistoryDTO,
   RelatedLocationDTO,
   RuleInfoDTO,
   SegmentDTO,
   SettingsDTO,
   StatsDTO,
+  TranslateProjectDTO,
 } from "../types";
 import { emitLocal } from "../lib/api";
 
@@ -300,6 +302,7 @@ function statsOf(findings: FindingDTO[]): StatsDTO {
   let truePositive = 0;
   let uncertain = 0;
   let pending = 0;
+  let translationMissing = 0;
   let sources = 0;
   let withCodeFlow = 0;
   const rules = new Set<string>();
@@ -316,6 +319,14 @@ function statsOf(findings: FindingDTO[]): StatsDTO {
       else if (f.ai.verdict === "uncertain") uncertain++;
     }
     if (f.translatePending) pending++;
+    if (
+      f.translatePending ||
+      !f.ruleNameZh ||
+      f.ruleNameZh === f.ruleName ||
+      !f.messageZhTemplate
+    ) {
+      translationMissing++;
+    }
     sources += f.sources.length;
     rules.add(f.ruleName);
     files.add(f.sink.file);
@@ -330,6 +341,7 @@ function statsOf(findings: FindingDTO[]): StatsDTO {
     missing: findings.length - resolved,
     unread,
     pending,
+    translationMissing,
     verified,
     falsePositive,
     truePositive,
@@ -573,6 +585,7 @@ let settings: SettingsDTO = {
   showColumnRuler: true,
   codeSearchShortcut: "Cmd+F",
   translateDb: "/Users/shiyan/.CodeQLAuditPro/translations.db",
+  historyDb: "/Users/shiyan/.CodeQLAuditPro/history.db",
   dataDir: "/Users/shiyan/.CodeQLAuditPro",
   configPath: "/Users/shiyan/.CodeQLAuditPro/config.json",
   windowWidth: 1480,
@@ -896,15 +909,52 @@ function mockAssistantRun(action: "create" | "analyze") {
   return Promise.resolve();
 }
 
+let mockProjectHistory: ProjectHistoryDTO[] = [
+  {
+    csvPath: CSV_PATH,
+    csvName: "pyhackme.sarif",
+    srcRoot: ROOT,
+    lastOpened: new Date().toISOString(),
+    totalFindings: 47,
+    resolvedFindings: 44,
+    reviewedCount: 12,
+    verdictCount: 9,
+    format: "sarif",
+    formatLabel: "SARIF v2.1.0",
+    toolName: "CodeQL",
+    resultExists: true,
+    resultSize: 12840000,
+    sourceExists: true,
+    active: true,
+  },
+  {
+    csvPath: "/Users/shiyan/Downloads/pyhackme.csv",
+    csvName: "pyhackme.csv",
+    srcRoot: "/Users/shiyan/Downloads/待做笔记的参考材料/pyhackme",
+    lastOpened: "2026-10-19T18:37:31+08:00",
+    totalFindings: 31,
+    resolvedFindings: 31,
+    reviewedCount: 31,
+    verdictCount: 4,
+    format: "csv",
+    formatLabel: "CSV",
+    toolName: "CodeQL",
+    resultExists: true,
+    resultSize: 86000,
+    sourceExists: true,
+    active: false,
+  },
+];
+
 export const mockApi: AppApi = {
   async Bootstrap(): Promise<BootstrapDTO> {
     return {
       settings,
       lastProject: CSV_PATH,
       lastSrcRoot: ROOT,
-      autoLoad: true,
+      autoLoad: false,
       platform: "darwin",
-      version: "1.1.0",
+      version: "1.2.0",
       defaultSearchShortcut: "Cmd+F",
       defaultEditorArgs: "-g {file}:{line}:{col}",
       dataDir: settings.dataDir,
@@ -952,6 +1002,59 @@ export const mockApi: AppApi = {
   },
   async GetProject() {
     return structuredClone(project);
+  },
+  async CloseProject() {
+    mockProjectHistory = mockProjectHistory.map((h) => ({ ...h, active: false }));
+  },
+  async GetProjectHistory() {
+    return structuredClone(mockProjectHistory);
+  },
+  async DeleteProjectHistory(csvPath: string) {
+    mockProjectHistory = mockProjectHistory.filter((h) => h.csvPath !== csvPath);
+    return structuredClone(mockProjectHistory);
+  },
+  async ClearProjectHistory() {
+    mockProjectHistory = [];
+    return [];
+  },
+  async TranslateProject(): Promise<TranslateProjectDTO> {
+    const targets = project.findings.filter(
+      (f) =>
+        f.translatePending ||
+        !f.ruleNameZh ||
+        f.ruleNameZh === f.ruleName ||
+        !f.messageZhTemplate,
+    );
+    emitLocal("translate:progress", {
+      done: 0,
+      total: targets.length,
+      message: `正在补全翻译 0/${targets.length} …`,
+    });
+    await delay(320);
+    for (const f of targets) {
+      f.translatePending = false;
+      f.translateSource = "llm";
+      f.translateSourceZh = "大模型";
+      if (!f.ruleNameZh || f.ruleNameZh === f.ruleName) {
+        f.ruleNameZh = f.ruleDisplay;
+      }
+      if (!f.messageZhTemplate) {
+        f.messageZhTemplate = f.messageRaw || f.ruleDisplay;
+      }
+    }
+    recompute();
+    emitLocal("translate:progress", {
+      done: targets.length,
+      total: targets.length,
+      message: `正在补全翻译 ${targets.length}/${targets.length} …`,
+    });
+    return {
+      project: structuredClone(project),
+      total: targets.length,
+      translated: targets.length,
+      remaining: 0,
+      message: `翻译完成：本次补全 ${targets.length} 条，当前项目已全部中文化。`,
+    };
   },
   async SetSrcRoot() {
     return structuredClone(project);

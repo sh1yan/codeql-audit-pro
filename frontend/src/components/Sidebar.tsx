@@ -67,7 +67,14 @@ export function Sidebar({
   const virtualizer = useVirtualizer({
     count: findings.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => 70,
+    // 行高不是固定的：AI 判定 + CWE + 路径等标签在窄侧栏里会换行。
+    // 使用动态测量，避免固定行高导致下一行标题与上一行标签重叠。
+    // 同时必须按漏洞 key（而不是列表下标）缓存行高：筛选会让同一个漏洞
+    // 落到新下标，但 React 复用它的 DOM 节点，ResizeObserver 不会再触发；
+    // 若沿用旧下标测出的行高，就会在首次切换筛选时出现相邻行上下挤占。
+    getItemKey: (index) => findings[index]?.key ?? index,
+    estimateSize: () => 82,
+    measureElement: (el) => el.getBoundingClientRect().height,
     overscan: 12,
   });
 
@@ -307,12 +314,13 @@ export function Sidebar({
               return (
                 <div
                   key={f.key}
+                  data-index={item.index}
+                  ref={virtualizer.measureElement}
                   style={{
                     position: "absolute",
                     top: 0,
                     left: 0,
                     width: "100%",
-                    height: item.size,
                     transform: `translateY(${item.start}px)`,
                   }}
                 >
