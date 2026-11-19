@@ -26,6 +26,47 @@ type BatchStartDTO struct {
 	Total int `json:"total"`
 }
 
+// BatchStateDTO 是批量验证的实时状态。
+//
+// 前端可能在中途关掉批量窗口再打开，甚至刷新界面；
+// 只要后端还在跑，就必须能读回「正在进行 / 进度 / 是否已在停止中」，
+// 否则界面会显示成「未开始」，用户就只能干等整批跑完。
+type BatchStateDTO struct {
+	Running       bool   `json:"running"`
+	Stopping      bool   `json:"stopping"`
+	Done          int    `json:"done"`
+	Total         int    `json:"total"`
+	FalsePositive int    `json:"falsePositive"`
+	TruePositive  int    `json:"truePositive"`
+	Uncertain     int    `json:"uncertain"`
+	Failed        int    `json:"failed"`
+	LastError     string `json:"lastError"`
+	StartedAt     string `json:"startedAt"`
+	ElapsedSecond int    `json:"elapsedSecond"`
+}
+
+// BatchState 返回当前批量验证状态（不改变任何东西，可随时轮询）。
+func (a *App) BatchState() *BatchStateDTO {
+	a.batchMu.Lock()
+	defer a.batchMu.Unlock()
+	st := &BatchStateDTO{
+		Running:       a.batchRunning,
+		Stopping:      a.batchStopping,
+		Done:          a.batchDone,
+		Total:         a.batchTotal,
+		FalsePositive: a.batchFalsePositive,
+		TruePositive:  a.batchTruePositive,
+		Uncertain:     a.batchUncertain,
+		Failed:        a.batchFailed,
+		LastError:     a.batchLastErr,
+	}
+	if !a.batchStarted.IsZero() {
+		st.StartedAt = a.batchStarted.Format(time.RFC3339)
+		st.ElapsedSecond = int(time.Since(a.batchStarted).Seconds())
+	}
+	return st
+}
+
 // verifier 返回当前 AI 判定器。只看 AI 验证自己的开关，不看翻译开关。
 func (a *App) verifier() *verify.Verifier {
 	a.mu.Lock()
@@ -226,6 +267,15 @@ func (a *App) StartBatchVerify(keys []string) (*BatchStartDTO, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.batchCancel = cancel
 	a.batchRunning = true
+	a.batchStopping = false
+	a.batchTotal = len(targets)
+	a.batchDone = 0
+	a.batchFalsePositive = 0
+	a.batchTruePositive = 0
+	a.batchUncertain = 0
+	a.batchFailed = 0
+	a.batchLastErr = ""
+	a.batchStarted = time.Now()
 	a.batchMu.Unlock()
 
 	total := len(targets)
@@ -233,12 +283,29 @@ func (a *App) StartBatchVerify(keys []string) (*BatchStartDTO, error) {
 	return &BatchStartDTO{Total: total}, nil
 }
 
-// CancelBatchVerify 请求停止批量验证（已在途的请求会先返回）。
+// CancelBatchVerify 请求强制停止批量验证。
+//
+// 取消 context 会立刻中断排队中的任务与在途 HTTP 请求；
+// 已经拿到的结论照常写回并保存，所以强制停止不会丢掉已完成的部分。
 func (a *App) CancelBatchVerify() {
 	a.batchMu.Lock()
-	defer a.batchMu.Unlock()
-	if a.batchCancel != nil {
-		a.batchCancel()
+	cancel := a.batchCancel
+	if a.batchRunning {
+		a.batchStopping = true
+	}
+	running := a.batchRunning
+	total := a.batchTotal
+	done := a.batchDone
+	a.batchMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if running && a.ctx != nil {
+		wruntime.EventsEmit(a.ctx, "batch:stopping", map[string]any{
+			"done":  done,
+			"total": total,
+		})
 	}
 }
 
@@ -252,15 +319,28 @@ func (a *App) runBatch(ctx context.Context, v *verify.Verifier, targets []*model
 		lastErr atomic.Value
 	)
 	emitProgress := func(f *model.Finding, ai *AIDTO) {
-		if a.ctx == nil {
-			return
-		}
 		errMsg := ""
 		if v := lastErr.Load(); v != nil {
 			errMsg, _ = v.(string)
 		}
+		doneN := int(done.Load())
+		// 先把进度写进 App 状态：这样前端关掉窗口再打开（或重新载入界面）
+		// 也能通过 BatchState 读回真实进度并强制停止，而不是看到「未开始」。
+		a.batchMu.Lock()
+		a.batchDone = doneN
+		a.batchFalsePositive = int(fp.Load())
+		a.batchTruePositive = int(tp.Load())
+		a.batchUncertain = int(un.Load())
+		a.batchFailed = int(failed.Load())
+		a.batchLastErr = errMsg
+		a.batchTotal = len(targets)
+		stopping := a.batchStopping
+		a.batchMu.Unlock()
+		if a.ctx == nil {
+			return
+		}
 		wruntime.EventsEmit(a.ctx, "batch:progress", BatchProgressDTO{
-			Done:          int(done.Load()),
+			Done:          doneN,
 			Total:         len(targets),
 			FalsePositive: int(fp.Load()),
 			TruePositive:  int(tp.Load()),
@@ -269,6 +349,7 @@ func (a *App) runBatch(ctx context.Context, v *verify.Verifier, targets []*model
 			LastError:     errMsg,
 			FindingKey:    keyOf(f),
 			AI:            ai,
+			Stopping:      stopping,
 		})
 	}
 	emitProgress(nil, nil)
@@ -354,7 +435,9 @@ func (a *App) runBatch(ctx context.Context, v *verify.Verifier, targets []*model
 	}
 	a.batchMu.Lock()
 	a.batchRunning = false
+	a.batchStopping = false
 	a.batchCancel = nil
+	a.batchDone = int(done.Load())
 	a.batchMu.Unlock()
 	if a.ctx != nil {
 		wruntime.EventsEmit(a.ctx, "batch:done", summary)

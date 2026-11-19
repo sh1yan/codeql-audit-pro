@@ -139,6 +139,11 @@ CSV 只有 9 列，CodeQL 在导出时已经把证据链压缩成消息文本；
 
 ![批量 AI 验证](docs/screenshot-batch.png)
 
+批量验证是后台任务：进度区、窗口底部与顶栏都有「强制停止」入口，
+点下后不再发起新的判定请求，已完成的结论立即保存；
+即使关掉批量窗口（或切到别的页面），顶栏也会常驻显示 `已完成/总数` 与停止按钮，
+重新打开窗口会从后端读回真实进度，而不是显示成「未开始」。
+
 ### 路径映射
 
 ![路径映射](docs/screenshot-mapping.png)
@@ -444,6 +449,10 @@ codeql-audit-pro/
 | `assistant:done` | `{action, status, statusLabel, outputFile, durationMs, error}` | 任务结束、结果联动 |
 | `translate:progress` | `{done, total, message}` | 补全翻译进度 |
 | `batch:progress` / `batch:done` | 批量 AI 验证进度 / 汇总 | 实时回填判定结果 |
+| `batch:stopping` | `{done, total}` | 用户点了「强制停止」，剩余条目不再发起请求 |
+
+前端还可以直接调用 `BatchState()` 拿回 `{running, stopping, done, total, ...}`：
+窗口被关掉再打开、或界面重新载入后，用它恢复真实进度与停止入口。
 
 ---
 

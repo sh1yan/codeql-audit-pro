@@ -68,6 +68,11 @@ export function TopBar({
   onLibrary,
   onMapping,
   onBatch,
+  batchRunning,
+  batchStopping,
+  batchDone,
+  batchTotal,
+  onStopBatch,
   onToggleTheme,
   onLangChange,
   onToggleInfo,
@@ -95,6 +100,11 @@ export function TopBar({
   onLibrary: () => void;
   onMapping: () => void;
   onBatch: () => void;
+  batchRunning: boolean;
+  batchStopping: boolean;
+  batchDone: number;
+  batchTotal: number;
+  onStopBatch: () => void;
   onToggleTheme: () => void;
   onLangChange: (lang: Lang) => void;
   onToggleInfo: () => void;
@@ -183,9 +193,26 @@ export function TopBar({
         </button>
       )}
       <button className="btn no-drag" onClick={onBatch} disabled={!project} title="批量 AI 验证">
-        <Wand2 size={14} />
+        {batchRunning ? <Loader2 size={14} className="spin" /> : <Wand2 size={14} />}
         <span className="hide-narrow">批量 AI 验证</span>
       </button>
+      {/* 批量验证常驻入口：窗口关掉、切到别的页面也能看到进度并强制停止。 */}
+      {batchRunning && (
+        <div className="batch-pill no-drag" title="批量 AI 误报验证正在进行">
+          <Loader2 size={11} className={cn("flex-none", !batchStopping && "spin")} />
+          <span className="font-mono text-[10px]">
+            {batchDone}/{batchTotal || "?"}
+          </span>
+          <button
+            className="batch-pill-stop"
+            onClick={onStopBatch}
+            disabled={batchStopping}
+            title="强制停止：不再发起新的判定请求，已完成的结论会保留"
+          >
+            {batchStopping ? "停止中…" : "强制停止"}
+          </button>
+        </div>
+      )}
       {TOPBAR_VISIBILITY.translate && (
         <button
           className="btn no-drag"

@@ -13,6 +13,7 @@ import type {
   AssistantStateDTO,
   AssistantStatusDTO,
   BatchProgressDTO,
+  BatchStateDTO,
   BatchSummaryDTO,
   BootstrapDTO,
   CodeFlowDTO,
@@ -596,6 +597,17 @@ let settings: SettingsDTO = {
 };
 
 let batchCancelled = false;
+// mock 的批量验证状态：让「关掉窗口再打开」也能读回进度（与真实后端语义一致）。
+let batchState: BatchStateDTO = {
+  running: false,
+  stopping: false,
+  done: 0,
+  total: 0,
+  falsePositive: 0,
+  truePositive: 0,
+  uncertain: 0,
+  failed: 0,
+};
 
 function recompute() {
   project.stats = statsOf(project.findings);
@@ -1155,6 +1167,16 @@ export const mockApi: AppApi = {
   },
   async StartBatchVerify(keys: string[]) {
     batchCancelled = false;
+    batchState = {
+      running: true,
+      stopping: false,
+      done: 0,
+      total: keys.length,
+      falsePositive: 0,
+      truePositive: 0,
+      uncertain: 0,
+      failed: 0,
+    };
     const targets = keys.length ? project.findings.filter((f) => keys.includes(f.key)) : project.findings;
     const total = targets.length;
     void (async () => {
@@ -1196,6 +1218,17 @@ export const mockApi: AppApi = {
           failed,
           findingKey: f.key,
           ai,
+          stopping: batchCancelled,
+        };
+        batchState = {
+          running: true,
+          stopping: batchCancelled,
+          done,
+          total,
+          falsePositive: fp,
+          truePositive: tp,
+          uncertain: un,
+          failed,
         };
         emitLocal("batch:progress", progress);
       }
@@ -1211,12 +1244,28 @@ export const mockApi: AppApi = {
           ? `已停止：共处理 ${done} / ${total} 条。`
           : `完成：共 ${done} 条，误报 ${fp}，确认 ${tp}，存疑 ${un}。`,
       };
+      batchState = {
+        ...batchState,
+        running: false,
+        stopping: false,
+        done,
+        total,
+        falsePositive: fp,
+        truePositive: tp,
+        uncertain: un,
+        failed,
+      };
       emitLocal("batch:done", summary);
     })();
     return { total };
   },
   async CancelBatchVerify() {
     batchCancelled = true;
+    batchState = { ...batchState, stopping: true };
+    emitLocal("batch:stopping", { done: batchState.done, total: batchState.total });
+  },
+  async BatchState() {
+    return { ...batchState };
   },
   async TestConnection(s) {
     await delay(700);

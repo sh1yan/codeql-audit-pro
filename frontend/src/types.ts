@@ -281,6 +281,8 @@ export interface BatchProgressDTO {
   lastError?: string;
   findingKey?: string;
   ai?: AIDTO | null;
+  /** 用户已请求强制停止，剩余条目不会再开始。 */
+  stopping?: boolean;
 }
 
 export interface BatchSummaryDTO {
@@ -296,6 +298,21 @@ export interface BatchSummaryDTO {
 
 export interface BatchStartDTO {
   total: number;
+}
+
+/** 批量验证的实时状态（窗口关掉再打开也能读回真实进度）。 */
+export interface BatchStateDTO {
+  running: boolean;
+  stopping: boolean;
+  done: number;
+  total: number;
+  falsePositive: number;
+  truePositive: number;
+  uncertain: number;
+  failed: number;
+  lastError?: string;
+  startedAt?: string;
+  elapsedSecond?: number;
 }
 
 export interface LibraryEntryDTO {
@@ -460,6 +477,7 @@ export interface AppApi {
   ClearVerdict(key: string): Promise<StatsDTO>;
   StartBatchVerify(keys: string[]): Promise<BatchStartDTO>;
   CancelBatchVerify(): Promise<void>;
+  BatchState(): Promise<BatchStateDTO>;
   TestConnection(s: LLMSettingsDTO): Promise<TestConnectionDTO>;
   GetLibrary(kind: string, query: string): Promise<LibraryDTO>;
   SaveLibraryEntry(kind: string, en: string, zh: string): Promise<void>;

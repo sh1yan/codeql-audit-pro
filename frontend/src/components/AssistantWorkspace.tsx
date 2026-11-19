@@ -701,10 +701,13 @@ export function AssistantWorkspace({
                 <input
                   className="input font-mono-ui"
                   value={config.extraArgs}
-                  placeholder={'例如 --no-sandbox --external="a b"'}
+                  placeholder="--build-mode=none"
                   onChange={(e) => patchConfig({ extraArgs: e.target.value })}
                 />
-                <span className="assistant-hint">支持双引号包裹含空格的参数，会追加到创建与分析的命令末尾。</span>
+                <span className="assistant-hint">
+                  例如 <code className="font-mono-ui">--build-mode=none</code>：跳过构建步骤，直接按源码创建数据库（解释型语言或不需要编译的仓库更快）。
+                  支持双引号包裹含空格的参数，会追加到创建与分析的命令末尾。
+                </span>
               </label>
             </section>
 

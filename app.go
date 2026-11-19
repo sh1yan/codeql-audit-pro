@@ -55,10 +55,20 @@ type App struct {
 	fileMu    sync.Mutex
 	fileCache map[string]*FileDTO
 
-	// 批量验证状态。
-	batchMu      sync.Mutex
-	batchCancel  context.CancelFunc
-	batchRunning bool
+	// 批量验证状态。batchMu 同时保护下面的进度计数，
+	// 这样前端重新打开批量窗口（或关掉窗口再回来）也能读到真实进度并强制停止。
+	batchMu            sync.Mutex
+	batchCancel        context.CancelFunc
+	batchRunning       bool
+	batchStopping      bool
+	batchTotal         int
+	batchDone          int
+	batchFalsePositive int
+	batchTruePositive  int
+	batchUncertain     int
+	batchFailed        int
+	batchLastErr       string
+	batchStarted       time.Time
 
 	initialCSV string
 	initialSrc string

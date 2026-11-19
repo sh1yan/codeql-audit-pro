@@ -3,6 +3,7 @@ import {
   CircleStop,
   Download,
   ExternalLink,
+  Loader2,
   Play,
   Settings2,
   Sparkles,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import type {
   BatchProgressDTO,
+  BatchStateDTO,
   BatchSummaryDTO,
   FindingDTO,
   ProjectDTO,
@@ -66,6 +68,7 @@ export function BatchModal({
   const [summary, setSummary] = useState<BatchSummaryDTO | null>(null);
   const [rows, setRows] = useState<ResultRow[]>([]);
   const [error, setError] = useState("");
+  const [stopping, setStopping] = useState(false);
   const runningRef = useRef(false);
 
   const aiReady =
@@ -83,7 +86,11 @@ export function BatchModal({
   useEffect(() => {
     if (!open) return;
     setScope(pending.length > 0 ? "pending" : "filtered");
+    setSummary(null);
+    setRows([]);
+    setError("");
     setRunning(false);
+    setStopping(false);
     setDone(0);
     setTotal(0);
     setFp(0);
@@ -91,9 +98,30 @@ export function BatchModal({
     setUn(0);
     setFailed(0);
     setLastError("");
-    setSummary(null);
-    setRows([]);
-    setError("");
+
+    // 关键：窗口可能是在一轮批量验证跑着的时候被关掉又打开的。
+    // 先向后端要一次真实状态，正在跑就把进度接回来，否则用户会看到
+    // 「开始验证」按钮、没有任何停止入口，只能干等整批结束。
+    let alive = true;
+    void api
+      .BatchState()
+      .then((st: BatchStateDTO) => {
+        if (!alive || !st?.running) return;
+        runningRef.current = true;
+        setRunning(true);
+        setStopping(!!st.stopping);
+        setDone(st.done || 0);
+        setTotal(st.total || 0);
+        setFp(st.falsePositive || 0);
+        setTp(st.truePositive || 0);
+        setUn(st.uncertain || 0);
+        setFailed(st.failed || 0);
+        setLastError(st.lastError || "");
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -107,6 +135,8 @@ export function BatchModal({
       setUn(p.uncertain);
       setFailed(p.failed);
       setLastError(p.lastError || "");
+      setRunning(true);
+      setStopping(!!p.stopping);
       if (p.findingKey && p.ai) {
         const f = project?.findings.find((x) => x.key === p.findingKey);
         if (f) {
@@ -125,8 +155,12 @@ export function BatchModal({
         }
       }
     });
+    const offStopping = onEvent<{ done: number; total: number }>("batch:stopping", () => {
+      setStopping(true);
+    });
     const offDone = onEvent<BatchSummaryDTO>("batch:done", (s) => {
       setRunning(false);
+      setStopping(false);
       runningRef.current = false;
       setSummary(s);
       notify(s.stopped ? "info" : "success", s.message);
@@ -134,6 +168,7 @@ export function BatchModal({
     });
     return () => {
       offProgress();
+      offStopping();
       offDone();
     };
   }, [open, project, notify, onProjectRefresh]);
@@ -150,6 +185,7 @@ export function BatchModal({
     setError("");
     setSummary(null);
     setRows([]);
+    setStopping(false);
     setDone(0);
     setFp(0);
     setTp(0);
@@ -167,10 +203,14 @@ export function BatchModal({
   };
 
   const stop = async () => {
+    if (stopping) return;
+    // 先本地反映「正在停止」，即使后端要等一个在途请求返回也不会看起来没反应。
+    setStopping(true);
     try {
       await api.CancelBatchVerify();
-      notify("info", "正在停止…（已在途的请求会先返回）");
+      notify("info", "已请求强制停止：剩余条目不会再调用大模型，已完成结论已保存。");
     } catch (err) {
+      setStopping(false);
       setError(String(err));
     }
   };
@@ -214,9 +254,9 @@ export function BatchModal({
             导出验证结果
           </button>
           {running ? (
-            <button className="btn btn-danger" onClick={stop}>
-              <CircleStop size={13} />
-              停止
+            <button className="btn btn-danger" onClick={stop} disabled={stopping}>
+              {stopping ? <Loader2 size={13} className="spin" /> : <CircleStop size={13} />}
+              {stopping ? "正在停止…" : "强制停止"}
             </button>
           ) : (
             <button className="btn btn-primary" onClick={start} disabled={!aiReady || targets.length === 0}>
@@ -310,8 +350,29 @@ export function BatchModal({
             </div>
           )}
           {running && (
-            <div className="text-[9.5px] text-tertiary flex items-center gap-1.5">
-              <Spinner size={10} /> 正在逐条调用大模型，结果会实时写回主界面…
+            <div className="flex items-center gap-2">
+              <div className="text-[9.5px] text-tertiary flex items-center gap-1.5 flex-1 min-w-0">
+                {stopping ? (
+                  <>
+                    <Loader2 size={10} className="spin text-sev-error" />
+                    正在停止：剩余 {Math.max(0, (total || targets.length) - done)} 条不会再发出请求…
+                  </>
+                ) : (
+                  <>
+                    <Spinner size={10} /> 正在逐条调用大模型，结果会实时写回主界面…
+                  </>
+                )}
+              </div>
+              {/* 进度区也能强制停止：窗口底部按钮可能在长内容下被推出可视区。 */}
+              <button
+                className="btn btn-sm btn-danger flex-none"
+                onClick={stop}
+                disabled={stopping}
+                title="强制停止：不再发起新的判定请求，已完成的结论会保留"
+              >
+                {stopping ? <Loader2 size={11} className="spin" /> : <CircleStop size={11} />}
+                {stopping ? "停止中…" : "强制停止"}
+              </button>
             </div>
           )}
         </div>

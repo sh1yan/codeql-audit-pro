@@ -306,6 +306,38 @@ select {
   flex: none;
 }
 
+/* 顶栏常驻的批量验证指示器：进度 + 强制停止，窗口关掉也不会失去停止入口。 */
+.batch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--accent-strong);
+  flex: none;
+}
+.batch-pill-stop {
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
+  background: color-mix(in srgb, var(--red) 18%, var(--panel));
+  color: var(--red);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.batch-pill-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 28%, var(--panel));
+}
+.batch-pill-stop:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
 .project-strip {
   flex: none;
   display: flex;
@@ -736,15 +768,21 @@ button.chip:hover {
   position: relative;
 }
 
+/* 列表行高度必须固定：虚拟滚动的 estimateSize 与它保持一致（Sidebar.tsx 的 ROW_HEIGHT）。
+   固定高度 + 不透明底色 = 滚动时既不会行重叠（重影），也不会出现滚动条虚长、下拉后大片空白。
+   contain: paint 让每行只在自己的盒子里绘制，WebKit 下也不会把上一行的像素涂到下一行。 */
 .finding-row {
   display: flex;
   width: 100%;
-  min-height: 64px;
+  height: 78px;
+  box-sizing: border-box;
+  overflow: hidden;
+  contain: layout paint;
   gap: 8px;
   padding: 9px 10px 9px 12px;
   border: 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
-  background: transparent;
+  background: var(--panel);
   color: var(--text);
   text-align: left;
   cursor: pointer;
@@ -755,7 +793,8 @@ button.chip:hover {
   background: var(--panel-hover);
 }
 .finding-row.selected {
-  background: linear-gradient(90deg, var(--accent-soft), transparent 90%);
+  /* 选中态用不透明渐变：半透明底色会让下一行的文字透上来（看起来像重影）。 */
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, var(--panel)), var(--panel) 88%);
 }
 .finding-row.selected::before {
   content: "";
@@ -799,8 +838,111 @@ button.chip:hover {
   align-items: center;
   gap: 4px;
   margin-top: 5px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  /* 标签保持单行（行高才能固定）；放不下的部分在右边缘渐隐，鼠标悬停有整行 title 兜底。 */
+  -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 90%, transparent 100%);
 }
+.finding-tags > .badge {
+  flex: none;
+}
+/* 漏洞等级 / AI 研判徽标：用不透明底色 + 描边 + 高对比文字。
+   半透明底色会随行背景（透明 / hover / 选中）变化，未选中时几乎看不出颜色差异，
+   这里改成自带底色的徽标，任何状态下都能直接看清结论。 */
+.finding-tags > .badge[data-tone] {
+  border: 1px solid var(--tone-border, var(--border));
+  background: var(--tone-bg, var(--panel-3));
+  color: var(--tone-fg, var(--text-muted));
+}
+.finding-tags > .badge[data-tone="error"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-error) 88%, var(--text));
+  --tone-bg: color-mix(in srgb, var(--color-sev-error) 20%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--color-sev-error) 52%, transparent);
+}
+.finding-tags > .badge[data-tone="warning"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-warning) 88%, var(--text));
+  --tone-bg: color-mix(in srgb, var(--color-sev-warning) 20%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--color-sev-warning) 52%, transparent);
+}
+.finding-tags > .badge[data-tone="note"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-note) 88%, var(--text));
+  --tone-bg: color-mix(in srgb, var(--color-sev-note) 20%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--color-sev-note) 52%, transparent);
+}
+.finding-tags > .badge[data-tone="recommendation"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-rec) 92%, var(--text));
+  --tone-bg: color-mix(in srgb, var(--color-sev-rec) 20%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--color-sev-rec) 52%, transparent);
+}
+.finding-tags > .badge[data-tone="false_positive"] {
+  --tone-fg: color-mix(in srgb, var(--color-ai-fp) 88%, var(--text));
+  --tone-bg: color-mix(in srgb, var(--color-ai-fp) 20%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--color-ai-fp) 52%, transparent);
+}
+.finding-tags > .badge[data-tone="true_positive"] {
+  --tone-fg: color-mix(in srgb, var(--color-ai-tp) 88%, var(--text));
+  --tone-bg: color-mix(in srgb, var(--color-ai-tp) 20%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--color-ai-tp) 52%, transparent);
+}
+.finding-tags > .badge[data-tone="uncertain"] {
+  --tone-fg: color-mix(in srgb, var(--color-ai-uncertain) 88%, var(--text));
+  --tone-bg: color-mix(in srgb, var(--color-ai-uncertain) 20%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--color-ai-uncertain) 52%, transparent);
+}
+.finding-tags > .badge[data-tone="info"] {
+  --tone-fg: var(--cyan);
+  --tone-bg: color-mix(in srgb, var(--cyan) 16%, var(--panel));
+  --tone-border: color-mix(in srgb, var(--cyan) 45%, transparent);
+}
+/* 浅色主题：同样的色相在白底上对比度只有 2:1 左右，这里把文字压深、底色提亮。 */
+[data-theme="light"] .finding-tags > .badge[data-tone="error"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-error) 38%, #450a0a);
+  --tone-bg: color-mix(in srgb, var(--color-sev-error) 14%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--color-sev-error) 55%, #ffffff);
+}
+[data-theme="light"] .finding-tags > .badge[data-tone="warning"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-warning) 32%, #3f2d05);
+  --tone-bg: color-mix(in srgb, var(--color-sev-warning) 16%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--color-sev-warning) 55%, #ffffff);
+}
+[data-theme="light"] .finding-tags > .badge[data-tone="note"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-note) 35%, #072b3a);
+  --tone-bg: color-mix(in srgb, var(--color-sev-note) 14%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--color-sev-note) 55%, #ffffff);
+}
+[data-theme="light"] .finding-tags > .badge[data-tone="recommendation"] {
+  --tone-fg: color-mix(in srgb, var(--color-sev-rec) 35%, #1f2937);
+  --tone-bg: color-mix(in srgb, var(--color-sev-rec) 14%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--color-sev-rec) 55%, #ffffff);
+}
+[data-theme="light"] .finding-tags > .badge[data-tone="false_positive"] {
+  --tone-fg: color-mix(in srgb, var(--color-ai-fp) 35%, #052e24);
+  --tone-bg: color-mix(in srgb, var(--color-ai-fp) 16%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--color-ai-fp) 55%, #ffffff);
+}
+[data-theme="light"] .finding-tags > .badge[data-tone="true_positive"] {
+  --tone-fg: color-mix(in srgb, var(--color-ai-tp) 35%, #450a14);
+  --tone-bg: color-mix(in srgb, var(--color-ai-tp) 15%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--color-ai-tp) 55%, #ffffff);
+}
+[data-theme="light"] .finding-tags > .badge[data-tone="uncertain"] {
+  --tone-fg: color-mix(in srgb, var(--color-ai-uncertain) 30%, #3f2d05);
+  --tone-bg: color-mix(in srgb, var(--color-ai-uncertain) 16%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--color-ai-uncertain) 55%, #ffffff);
+}
+[data-theme="light"] .finding-tags > .badge[data-tone="info"] {
+  --tone-fg: color-mix(in srgb, var(--cyan) 40%, #083344);
+  --tone-bg: color-mix(in srgb, var(--cyan) 12%, #ffffff);
+  --tone-border: color-mix(in srgb, var(--cyan) 45%, #ffffff);
+}
+
+.finding-tags > .badge[data-tone="muted"] {
+  --tone-fg: var(--text-muted);
+  --tone-bg: color-mix(in srgb, var(--panel-3) 92%, var(--panel));
+  --tone-border: var(--border);
+}
+
 .unread-dot {
   width: 5px;
   height: 5px;

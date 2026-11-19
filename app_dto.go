@@ -319,6 +319,8 @@ type BatchProgressDTO struct {
 	LastError     string `json:"lastError,omitempty"`
 	FindingKey    string `json:"findingKey,omitempty"`
 	AI            *AIDTO `json:"ai,omitempty"`
+	// Stopping 表示用户已经点了「强制停止」，剩余的条目不会再开始。
+	Stopping bool `json:"stopping,omitempty"`
 }
 
 // BatchSummaryDTO 是批量验证结束事件载荷。

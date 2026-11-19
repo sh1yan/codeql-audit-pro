@@ -126,6 +126,9 @@ export default function App() {
   const [project, setProject] = useState<ProjectDTO | null>(null);
   const [projectHistory, setProjectHistory] = useState<ProjectHistoryDTO[]>([]);
   const [translating, setTranslating] = useState(false);
+  // 批量 AI 验证的全局状态：顶栏常驻显示进度 + 强制停止入口，
+  // 即使批量窗口被关掉，用户也能随时中止整批任务。
+  const [batch, setBatch] = useState({ running: false, stopping: false, done: 0, total: 0 });
   const [translateProgress, setTranslateProgress] = useState({ done: 0, total: 0 });
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -586,6 +589,12 @@ export default function App() {
   // 批量验证：实时回填 AI 结论，结束后刷新项目。
   useEffect(() => {
     const offProgress = onEvent<BatchProgressDTO>("batch:progress", (p) => {
+      setBatch({
+        running: true,
+        stopping: !!p.stopping,
+        done: p.done,
+        total: p.total,
+      });
       if (!p.findingKey || !p.ai) return;
       setProject((prev) => {
         if (!prev) return prev;
@@ -606,15 +615,51 @@ export default function App() {
         };
       });
     });
+    const offStopping = onEvent<{ done: number; total: number }>("batch:stopping", (p) => {
+      setBatch((prev) => ({ ...prev, running: true, stopping: true, done: p.done ?? prev.done, total: p.total || prev.total }));
+    });
     const offDone = onEvent<BatchSummaryDTO>("batch:done", (s) => {
+      setBatch({ running: false, stopping: false, done: s.done, total: s.total });
       setStatMessage(s.message, s.stopped ? "info" : "success", false);
       void refreshProject();
     });
     return () => {
       offProgress();
+      offStopping();
       offDone();
     };
   }, [refreshProject, setStatMessage]);
+
+  // 界面重新载入 / 切换项目后，同步一次后端真实的批量状态，
+  // 避免「后端还在跑、界面却以为没开始」。
+  useEffect(() => {
+    let alive = true;
+    void api
+      .BatchState()
+      .then((st) => {
+        if (!alive) return;
+        setBatch({
+          running: !!st?.running,
+          stopping: !!st?.stopping,
+          done: st?.done ?? 0,
+          total: st?.total ?? 0,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [project?.csvPath, project?.loadedAt]);
+
+  const stopBatch = async () => {
+    setBatch((prev) => ({ ...prev, stopping: true }));
+    try {
+      await api.CancelBatchVerify();
+      notify("info", "已请求强制停止批量 AI 验证：剩余条目不会再调用大模型。");
+    } catch (err) {
+      notify("error", String(err));
+    }
+  };
 
   // 文件拖放。
   useEffect(() => {
@@ -1198,6 +1243,11 @@ export default function App() {
         onLibrary={() => setModal("library")}
         onMapping={() => setModal("mapping")}
         onBatch={() => setModal("batch")}
+        batchRunning={batch.running}
+        batchStopping={batch.stopping}
+        batchDone={batch.done}
+        batchTotal={batch.total}
+        onStopBatch={() => void stopBatch()}
         onToggleTheme={toggleTheme}
         onLangChange={changeLang}
         onToggleInfo={toggleInfo}

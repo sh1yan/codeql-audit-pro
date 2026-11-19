@@ -33,6 +33,9 @@ export const EMPTY_FILTER: FindingsFilter = {
   onlyUnresolved: false,
 };
 
+/** 列表行高（px）。必须与 index.css 里 .finding-row 的高度保持一致。 */
+export const ROW_HEIGHT = 78;
+
 const AI_OPTIONS = [
   { value: "", label: "全部 AI 判定" },
   { value: "false_positive", label: "AI 误报" },
@@ -67,15 +70,14 @@ export function Sidebar({
   const virtualizer = useVirtualizer({
     count: findings.length,
     getScrollElement: () => listRef.current,
-    // 行高不是固定的：AI 判定 + CWE + 路径等标签在窄侧栏里会换行。
-    // 使用动态测量，避免固定行高导致下一行标题与上一行标签重叠。
-    // 同时必须按漏洞 key（而不是列表下标）缓存行高：筛选会让同一个漏洞
-    // 落到新下标，但 React 复用它的 DOM 节点，ResizeObserver 不会再触发；
-    // 若沿用旧下标测出的行高，就会在首次切换筛选时出现相邻行上下挤占。
+    // 行高在 CSS 里被写死成 ROW_HEIGHT（标签单行、超出渐隐），
+    // 所以 estimateSize 与真实高度完全一致：虚拟列表不需要动态测量，
+    // 也就不会出现「估算高度 < 实际高度」导致的行重叠（重影），
+    // 以及「估算高度 > 实际高度」导致的滚动条虚长、下拉出现大片空白。
+    // 仍然按漏洞 key 缓存行位置：筛选后同一个漏洞换了下标也不会错位。
     getItemKey: (index) => findings[index]?.key ?? index,
-    estimateSize: () => 82,
-    measureElement: (el) => el.getBoundingClientRect().height,
-    overscan: 12,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
   });
 
   const activeFilterCount = useMemo(() => {
@@ -315,12 +317,13 @@ export function Sidebar({
                 <div
                   key={f.key}
                   data-index={item.index}
-                  ref={virtualizer.measureElement}
                   style={{
                     position: "absolute",
                     top: 0,
                     left: 0,
                     width: "100%",
+                    height: ROW_HEIGHT,
+                    // 行高固定：直接把行摆到绝对位置上，不需要动态测量回调。
                     transform: `translateY(${item.start}px)`,
                   }}
                 >
@@ -371,11 +374,27 @@ function FindingRow({
 }) {
   const sev = severityMeta(finding.severity);
   const v = verdictMeta(finding.ai?.verdict);
+  const cwes = finding.cwes ?? [];
+  const pathCount = finding.codeFlows?.length ?? 0;
+
+  // 徽标在窄侧栏里必须保持可读：等级与 AI 研判排在最前，
+  // 其余标签放后面，放不下的部分由 CSS 渐隐裁掉（见 .finding-tags）。
+  const tagSummary = [
+    `等级：${finding.severityZh || sev.label}`,
+    finding.ai ? `AI 研判：${finding.ai.verdictZh || v?.label || finding.ai.verdict}` : "AI 研判：未验证",
+    cwes.length > 0 ? `CWE：${cwes.join(", ")}` : "",
+    pathCount > 0 ? `${pathCount} 条污点路径` : "",
+    finding.sink.resolved ? "" : "未定位",
+    finding.translatePending ? "待翻译" : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   return (
     <button
       className={cn("finding-row", selected && "selected", finding.reviewed && "read")}
       onClick={onSelect}
-      title={`${finding.ruleDisplay}\n${finding.sink.file}:${finding.sink.startLine}`}
+      title={`${finding.ruleDisplay}\n${finding.sink.file}:${finding.sink.startLine}\n\n${tagSummary}`}
       aria-current={selected}
     >
       <span className={cn("finding-sev", sev.bar)} />
@@ -390,30 +409,36 @@ function FindingRow({
           {finding.reviewed && <span className="opacity-60"> · 已读</span>}
         </div>
         <div className="finding-tags">
-          <span className={cn("badge", sev.bg, sev.text, sev.border)}>{finding.severityZh}</span>
-          {(finding.cwes ?? []).slice(0, 2).map((cwe) => (
-            <span key={cwe} className="badge tag-chip font-mono" title={finding.cwes.join(", ")}>
-              {cwe}
-            </span>
-          ))}
-          {finding.codeFlows?.length > 0 && (
-            <span className="badge bg-surface-3 text-cyan border-subtle" title="完整污点传播路径">
-              {finding.codeFlows.length} 路径
-            </span>
-          )}
-          {v && finding.ai && (
-            <span className={cn("badge", v.bg, v.text, v.border)} title={finding.ai.reason}>
+          <span className="badge" data-tone={sev.key} title={`漏洞等级：${finding.severityZh || sev.label}`}>
+            {finding.severityZh || sev.label}
+          </span>
+          {finding.ai && (
+            <span
+              className="badge"
+              data-tone={finding.ai.verdict}
+              title={finding.ai.reason || `AI 研判：${finding.ai.verdictZh || v?.label || "未知"}`}
+            >
               <Sparkles size={8} />
-              {finding.ai.verdictZh}
+              {finding.ai.verdictZh || v?.label || finding.ai.verdict}
             </span>
           )}
           {!finding.sink.resolved && (
-            <span className="badge bg-surface-3 text-tertiary border-subtle">
+            <span className="badge" data-tone="muted" title="源码里没找到这个文件或行号">
               <AlertTriangle size={8} /> 未定位
             </span>
           )}
+          {pathCount > 0 && (
+            <span className="badge" data-tone="info" title="完整污点传播路径">
+              {pathCount} 路径
+            </span>
+          )}
+          {cwes.slice(0, 2).map((cwe) => (
+            <span key={cwe} className="badge" data-tone="muted" title={cwes.join(", ")}>
+              {cwe}
+            </span>
+          ))}
           {finding.translatePending && (
-            <span className="badge bg-sev-warning-soft text-sev-warning border-sev-warning/25">
+            <span className="badge" data-tone="warning">
               待翻译
             </span>
           )}
